@@ -1,12 +1,26 @@
-"""Warstwa danych: SQLite, słowniki, zatwierdzanie dokumentów, stany i kasa."""
+"""Warstwa danych: obsługa PostgreSQL (Supabase) oraz SQLite (lokalnie)."""
 
 from __future__ import annotations
 
+import os
 import sqlite3
 from contextlib import contextmanager
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Iterator
+
+try:
+    import streamlit as st
+    STREAMLIT_AVAILABLE = True
+except ImportError:
+    STREAMLIT_AVAILABLE = False
+
+try:
+    import psycopg2
+    from psycopg2.extras import RealDictCursor
+    PSYCOPG2_AVAILABLE = True
+except ImportError:
+    PSYCOPG2_AVAILABLE = False
 
 DB_PATH = Path(__file__).resolve().parent / "scrap_accounting.db"
 
@@ -15,144 +29,275 @@ class AppError(Exception):
     """Błąd logiki biznesowej pokazywany użytkownikowi."""
 
 
-def _round_money(value: float) -> float:
+def _round_money(value: Any) -> float:
     return round(float(value), 2)
 
 
-def _round_qty(value: float) -> float:
+def _round_qty(value: Any) -> float:
     return round(float(value), 3)
 
 
+def get_database_url() -> str | None:
+    if STREAMLIT_AVAILABLE:
+        try:
+            if "DATABASE_URL" in st.secrets:
+                return str(st.secrets["DATABASE_URL"])
+        except Exception:
+            pass
+    return os.environ.get("DATABASE_URL")
+
+
+class DBConnection:
+    def __init__(self, raw_conn: Any, is_pg: bool = False) -> None:
+        self.raw_conn = raw_conn
+        self.is_pg = is_pg
+
+    def execute(self, sql: str, params: tuple | list = ()) -> Any:
+        if self.is_pg:
+            pg_sql = sql.replace("?", "%s")
+            cur = self.raw_conn.cursor()
+            cur.execute(pg_sql, params)
+            return cur
+        else:
+            return self.raw_conn.execute(sql, params)
+
+    def executescript(self, script: str) -> None:
+        if self.is_pg:
+            cur = self.raw_conn.cursor()
+            cur.execute(script)
+        else:
+            self.raw_conn.executescript(script)
+
+
 @contextmanager
-def get_conn() -> Iterator[sqlite3.Connection]:
-    conn = sqlite3.connect(DB_PATH)
-    conn.row_factory = sqlite3.Row
-    conn.execute("PRAGMA foreign_keys = ON")
-    try:
-        yield conn
-        conn.commit()
-    except Exception:
-        conn.rollback()
-        raise
-    finally:
-        conn.close()
+def get_conn() -> Iterator[DBConnection]:
+    db_url = get_database_url()
+    if db_url and PSYCOPG2_AVAILABLE:
+        conn = psycopg2.connect(db_url, cursor_factory=RealDictCursor)
+        try:
+            yield DBConnection(conn, is_pg=True)
+            conn.commit()
+        except Exception:
+            conn.rollback()
+            raise
+        finally:
+            conn.close()
+    else:
+        conn = sqlite3.connect(DB_PATH)
+        conn.row_factory = sqlite3.Row
+        conn.execute("PRAGMA foreign_keys = ON")
+        try:
+            yield DBConnection(conn, is_pg=False)
+            conn.commit()
+        except Exception:
+            conn.rollback()
+            raise
+        finally:
+            conn.close()
 
 
 def init_db() -> None:
     with get_conn() as conn:
-        conn.executescript(
-            """
-            CREATE TABLE IF NOT EXISTS products (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                sku TEXT NOT NULL UNIQUE,
-                name TEXT NOT NULL,
-                purchase_price REAL NOT NULL CHECK (purchase_price >= 0),
-                sale_price REAL NOT NULL CHECK (sale_price >= 0)
-            );
+        if conn.is_pg:
+            conn.executescript(
+                """
+                CREATE TABLE IF NOT EXISTS products (
+                    id SERIAL PRIMARY KEY,
+                    sku TEXT NOT NULL UNIQUE,
+                    name TEXT NOT NULL,
+                    purchase_price NUMERIC(12, 2) NOT NULL CHECK (purchase_price >= 0),
+                    sale_price NUMERIC(12, 2) NOT NULL CHECK (sale_price >= 0)
+                );
 
-            CREATE TABLE IF NOT EXISTS counterparties (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                name TEXT NOT NULL,
-                phone TEXT,
-                inn TEXT,
-                address TEXT
-            );
+                CREATE TABLE IF NOT EXISTS counterparties (
+                    id SERIAL PRIMARY KEY,
+                    name TEXT NOT NULL,
+                    phone TEXT,
+                    inn TEXT,
+                    address TEXT
+                );
 
-            CREATE TABLE IF NOT EXISTS warehouses (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                name TEXT NOT NULL UNIQUE,
-                description TEXT
-            );
+                CREATE TABLE IF NOT EXISTS warehouses (
+                    id SERIAL PRIMARY KEY,
+                    name TEXT NOT NULL UNIQUE,
+                    description TEXT
+                );
 
-            CREATE TABLE IF NOT EXISTS stock (
-                warehouse_id INTEGER NOT NULL,
-                product_id INTEGER NOT NULL,
-                quantity REAL NOT NULL DEFAULT 0,
-                PRIMARY KEY (warehouse_id, product_id),
-                FOREIGN KEY (warehouse_id) REFERENCES warehouses(id),
-                FOREIGN KEY (product_id) REFERENCES products(id)
-            );
+                CREATE TABLE IF NOT EXISTS stock (
+                    warehouse_id INTEGER NOT NULL REFERENCES warehouses(id),
+                    product_id INTEGER NOT NULL REFERENCES products(id),
+                    quantity NUMERIC(12, 3) NOT NULL DEFAULT 0,
+                    PRIMARY KEY (warehouse_id, product_id)
+                );
 
-            CREATE TABLE IF NOT EXISTS cashbox (
-                id INTEGER PRIMARY KEY CHECK (id = 1),
-                balance REAL NOT NULL DEFAULT 0
-            );
+                CREATE TABLE IF NOT EXISTS cashbox (
+                    id INTEGER PRIMARY KEY CHECK (id = 1),
+                    balance NUMERIC(14, 2) NOT NULL DEFAULT 0
+                );
 
-            CREATE TABLE IF NOT EXISTS purchases (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                number TEXT NOT NULL UNIQUE,
-                doc_date TEXT NOT NULL,
-                counterparty_id INTEGER NOT NULL,
-                warehouse_id INTEGER NOT NULL,
-                total REAL NOT NULL DEFAULT 0,
-                FOREIGN KEY (counterparty_id) REFERENCES counterparties(id),
-                FOREIGN KEY (warehouse_id) REFERENCES warehouses(id)
-            );
+                INSERT INTO cashbox (id, balance) VALUES (1, 0) ON CONFLICT (id) DO NOTHING;
 
-            CREATE TABLE IF NOT EXISTS purchase_lines (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                purchase_id INTEGER NOT NULL,
-                product_id INTEGER NOT NULL,
-                quantity REAL NOT NULL CHECK (quantity > 0),
-                price REAL NOT NULL CHECK (price >= 0),
-                amount REAL NOT NULL,
-                FOREIGN KEY (purchase_id) REFERENCES purchases(id) ON DELETE CASCADE,
-                FOREIGN KEY (product_id) REFERENCES products(id)
-            );
+                CREATE TABLE IF NOT EXISTS purchases (
+                    id SERIAL PRIMARY KEY,
+                    number TEXT NOT NULL UNIQUE,
+                    doc_date DATE NOT NULL,
+                    counterparty_id INTEGER NOT NULL REFERENCES counterparties(id),
+                    warehouse_id INTEGER NOT NULL REFERENCES warehouses(id),
+                    total NUMERIC(14, 2) NOT NULL DEFAULT 0
+                );
 
-            CREATE TABLE IF NOT EXISTS sales (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                number TEXT NOT NULL UNIQUE,
-                doc_date TEXT NOT NULL,
-                counterparty_id INTEGER NOT NULL,
-                warehouse_id INTEGER NOT NULL,
-                total REAL NOT NULL DEFAULT 0,
-                FOREIGN KEY (counterparty_id) REFERENCES counterparties(id),
-                FOREIGN KEY (warehouse_id) REFERENCES warehouses(id)
-            );
+                CREATE TABLE IF NOT EXISTS purchase_lines (
+                    id SERIAL PRIMARY KEY,
+                    purchase_id INTEGER NOT NULL REFERENCES purchases(id) ON DELETE CASCADE,
+                    product_id INTEGER NOT NULL REFERENCES products(id),
+                    quantity NUMERIC(12, 3) NOT NULL CHECK (quantity > 0),
+                    price NUMERIC(12, 2) NOT NULL CHECK (price >= 0),
+                    amount NUMERIC(14, 2) NOT NULL
+                );
 
-            CREATE TABLE IF NOT EXISTS sale_lines (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                sale_id INTEGER NOT NULL,
-                product_id INTEGER NOT NULL,
-                quantity REAL NOT NULL CHECK (quantity > 0),
-                price REAL NOT NULL CHECK (price >= 0),
-                amount REAL NOT NULL,
-                FOREIGN KEY (sale_id) REFERENCES sales(id) ON DELETE CASCADE,
-                FOREIGN KEY (product_id) REFERENCES products(id)
-            );
+                CREATE TABLE IF NOT EXISTS sales (
+                    id SERIAL PRIMARY KEY,
+                    number TEXT NOT NULL UNIQUE,
+                    doc_date DATE NOT NULL,
+                    counterparty_id INTEGER NOT NULL REFERENCES counterparties(id),
+                    warehouse_id INTEGER NOT NULL REFERENCES warehouses(id),
+                    total NUMERIC(14, 2) NOT NULL DEFAULT 0
+                );
 
-            INSERT OR IGNORE INTO cashbox (id, balance) VALUES (1, 0);
+                CREATE TABLE IF NOT EXISTS sale_lines (
+                    id SERIAL PRIMARY KEY,
+                    sale_id INTEGER NOT NULL REFERENCES sales(id) ON DELETE CASCADE,
+                    product_id INTEGER NOT NULL REFERENCES products(id),
+                    quantity NUMERIC(12, 3) NOT NULL CHECK (quantity > 0),
+                    price NUMERIC(12, 2) NOT NULL CHECK (price >= 0),
+                    amount NUMERIC(14, 2) NOT NULL
+                );
 
-            CREATE TABLE IF NOT EXISTS pallet_labels (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                code TEXT NOT NULL UNIQUE,
-                product_id INTEGER NOT NULL,
-                net_weight REAL NOT NULL CHECK (net_weight > 0),
-                tare_weight REAL NOT NULL CHECK (tare_weight >= 0),
-                created_at TEXT NOT NULL,
-                FOREIGN KEY (product_id) REFERENCES products(id)
-            );
-            """
-        )
+                CREATE TABLE IF NOT EXISTS pallet_labels (
+                    id SERIAL PRIMARY KEY,
+                    code TEXT NOT NULL UNIQUE,
+                    product_id INTEGER NOT NULL REFERENCES products(id),
+                    net_weight NUMERIC(12, 3) NOT NULL CHECK (net_weight > 0),
+                    tare_weight NUMERIC(12, 3) NOT NULL CHECK (tare_weight >= 0),
+                    created_at TEXT NOT NULL
+                );
+                """
+            )
+        else:
+            conn.executescript(
+                """
+                CREATE TABLE IF NOT EXISTS products (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    sku TEXT NOT NULL UNIQUE,
+                    name TEXT NOT NULL,
+                    purchase_price REAL NOT NULL CHECK (purchase_price >= 0),
+                    sale_price REAL NOT NULL CHECK (sale_price >= 0)
+                );
+
+                CREATE TABLE IF NOT EXISTS counterparties (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    name TEXT NOT NULL,
+                    phone TEXT,
+                    inn TEXT,
+                    address TEXT
+                );
+
+                CREATE TABLE IF NOT EXISTS warehouses (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    name TEXT NOT NULL UNIQUE,
+                    description TEXT
+                );
+
+                CREATE TABLE IF NOT EXISTS stock (
+                    warehouse_id INTEGER NOT NULL,
+                    product_id INTEGER NOT NULL,
+                    quantity REAL NOT NULL DEFAULT 0,
+                    PRIMARY KEY (warehouse_id, product_id),
+                    FOREIGN KEY (warehouse_id) REFERENCES warehouses(id),
+                    FOREIGN KEY (product_id) REFERENCES products(id)
+                );
+
+                CREATE TABLE IF NOT EXISTS cashbox (
+                    id INTEGER PRIMARY KEY CHECK (id = 1),
+                    balance REAL NOT NULL DEFAULT 0
+                );
+
+                CREATE TABLE IF NOT EXISTS purchases (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    number TEXT NOT NULL UNIQUE,
+                    doc_date TEXT NOT NULL,
+                    counterparty_id INTEGER NOT NULL,
+                    warehouse_id INTEGER NOT NULL,
+                    total REAL NOT NULL DEFAULT 0,
+                    FOREIGN KEY (counterparty_id) REFERENCES counterparties(id),
+                    FOREIGN KEY (warehouse_id) REFERENCES warehouses(id)
+                );
+
+                CREATE TABLE IF NOT EXISTS purchase_lines (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    purchase_id INTEGER NOT NULL,
+                    product_id INTEGER NOT NULL,
+                    quantity REAL NOT NULL CHECK (quantity > 0),
+                    price REAL NOT NULL CHECK (price >= 0),
+                    amount REAL NOT NULL,
+                    FOREIGN KEY (purchase_id) REFERENCES purchases(id) ON DELETE CASCADE,
+                    FOREIGN KEY (product_id) REFERENCES products(id)
+                );
+
+                CREATE TABLE IF NOT EXISTS sales (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    number TEXT NOT NULL UNIQUE,
+                    doc_date TEXT NOT NULL,
+                    counterparty_id INTEGER NOT NULL,
+                    warehouse_id INTEGER NOT NULL,
+                    total REAL NOT NULL DEFAULT 0,
+                    FOREIGN KEY (counterparty_id) REFERENCES counterparties(id),
+                    FOREIGN KEY (warehouse_id) REFERENCES warehouses(id)
+                );
+
+                CREATE TABLE IF NOT EXISTS sale_lines (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    sale_id INTEGER NOT NULL,
+                    product_id INTEGER NOT NULL,
+                    quantity REAL NOT NULL CHECK (quantity > 0),
+                    price REAL NOT NULL CHECK (price >= 0),
+                    amount REAL NOT NULL,
+                    FOREIGN KEY (sale_id) REFERENCES sales(id) ON DELETE CASCADE,
+                    FOREIGN KEY (product_id) REFERENCES products(id)
+                );
+
+                INSERT OR IGNORE INTO cashbox (id, balance) VALUES (1, 0);
+
+                CREATE TABLE IF NOT EXISTS pallet_labels (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    code TEXT NOT NULL UNIQUE,
+                    product_id INTEGER NOT NULL,
+                    net_weight REAL NOT NULL CHECK (net_weight > 0),
+                    tare_weight REAL NOT NULL CHECK (tare_weight >= 0),
+                    created_at TEXT NOT NULL,
+                    FOREIGN KEY (product_id) REFERENCES products(id)
+                );
+                """
+            )
 
 
-def _row_to_dict(row: sqlite3.Row | None) -> dict[str, Any] | None:
+def _row_to_dict(row: Any) -> dict[str, Any] | None:
     if row is None:
         return None
     return dict(row)
 
 
-def _rows(rows: list[sqlite3.Row]) -> list[dict[str, Any]]:
+def _rows(rows: list[Any]) -> list[dict[str, Any]]:
     return [dict(r) for r in rows]
 
 
-def _next_number(conn: sqlite3.Connection, table: str, prefix: str) -> str:
+def _next_number(conn: DBConnection, table: str, prefix: str) -> str:
     row = conn.execute(f"SELECT COUNT(*) AS n FROM {table}").fetchone()
-    return f"{prefix}-{int(row['n']) + 1:05d}"
+    n = int(row["n"] if isinstance(row, dict) or hasattr(row, "keys") else row[0])
+    return f"{prefix}-{n + 1:05d}"
 
 
-def _stock_qty(conn: sqlite3.Connection, warehouse_id: int, product_id: int) -> float:
+def _stock_qty(conn: DBConnection, warehouse_id: int, product_id: int) -> float:
     row = conn.execute(
         """
         SELECT quantity FROM stock
@@ -160,11 +305,14 @@ def _stock_qty(conn: sqlite3.Connection, warehouse_id: int, product_id: int) -> 
         """,
         (warehouse_id, product_id),
     ).fetchone()
-    return float(row["quantity"]) if row else 0.0
+    if not row:
+        return 0.0
+    val = row["quantity"] if isinstance(row, dict) or hasattr(row, "keys") else row[0]
+    return float(val or 0.0)
 
 
 def _change_stock(
-    conn: sqlite3.Connection, warehouse_id: int, product_id: int, delta: float
+    conn: DBConnection, warehouse_id: int, product_id: int, delta: float
 ) -> None:
     current = _stock_qty(conn, warehouse_id, product_id)
     new_qty = _round_qty(current + delta)
@@ -192,11 +340,17 @@ def _change_stock(
     )
 
 
-def _change_cash(conn: sqlite3.Connection, delta: float) -> None:
-    conn.execute(
-        "UPDATE cashbox SET balance = ROUND(balance + ?, 2) WHERE id = 1",
-        (_round_money(delta),),
-    )
+def _change_cash(conn: DBConnection, delta: float) -> None:
+    if conn.is_pg:
+        conn.execute(
+            "UPDATE cashbox SET balance = ROUND(CAST(balance + ? AS numeric), 2) WHERE id = 1",
+            (_round_money(delta),),
+        )
+    else:
+        conn.execute(
+            "UPDATE cashbox SET balance = ROUND(balance + ?, 2) WHERE id = 1",
+            (_round_money(delta),),
+        )
 
 
 # --- Товары ---
@@ -232,12 +386,16 @@ def add_product(sku: str, name: str, purchase_price: float, sale_price: float) -
                 """
                 INSERT INTO products (sku, name, purchase_price, sale_price)
                 VALUES (?, ?, ?, ?)
+                RETURNING id
                 """,
                 (sku, name, _round_money(purchase_price), _round_money(sale_price)),
             )
-            return int(cur.lastrowid)
-    except sqlite3.IntegrityError as exc:
-        raise AppError("Indeks musi być unikalny.") from exc
+            row = cur.fetchone()
+            return int(row["id"] if isinstance(row, dict) or hasattr(row, "keys") else row[0])
+    except Exception as exc:
+        if "unique" in str(exc).lower() or "duplicate" in str(exc).lower() or "integrity" in str(exc).lower():
+            raise AppError("Indeks musi być unikalny.") from exc
+        raise
 
 
 def update_product(
@@ -264,8 +422,10 @@ def update_product(
             )
             if cur.rowcount == 0:
                 raise AppError("Nie znaleziono towaru.")
-    except sqlite3.IntegrityError as exc:
-        raise AppError("Indeks musi być unikalny.") from exc
+    except Exception as exc:
+        if "unique" in str(exc).lower() or "duplicate" in str(exc).lower() or "integrity" in str(exc).lower():
+            raise AppError("Indeks musi być unikalny.") from exc
+        raise
 
 
 def delete_product(product_id: int) -> None:
@@ -315,10 +475,12 @@ def add_counterparty(name: str, phone: str, inn: str, address: str) -> int:
             """
             INSERT INTO counterparties (name, phone, inn, address)
             VALUES (?, ?, ?, ?)
+            RETURNING id
             """,
             (name, phone.strip(), inn.strip(), address.strip()),
         )
-        return int(cur.lastrowid)
+        row = cur.fetchone()
+        return int(row["id"] if isinstance(row, dict) or hasattr(row, "keys") else row[0])
 
 
 def update_counterparty(
@@ -378,12 +540,19 @@ def add_warehouse(name: str, description: str) -> int:
     try:
         with get_conn() as conn:
             cur = conn.execute(
-                "INSERT INTO warehouses (name, description) VALUES (?, ?)",
+                """
+                INSERT INTO warehouses (name, description)
+                VALUES (?, ?)
+                RETURNING id
+                """,
                 (name, description.strip()),
             )
-            return int(cur.lastrowid)
-    except sqlite3.IntegrityError as exc:
-        raise AppError("Magazyn o takiej nazwie już istnieje.") from exc
+            row = cur.fetchone()
+            return int(row["id"] if isinstance(row, dict) or hasattr(row, "keys") else row[0])
+    except Exception as exc:
+        if "unique" in str(exc).lower() or "duplicate" in str(exc).lower() or "integrity" in str(exc).lower():
+            raise AppError("Magazyn o takiej nazwie już istnieje.") from exc
+        raise
 
 
 def update_warehouse(warehouse_id: int, name: str, description: str) -> None:
@@ -398,8 +567,10 @@ def update_warehouse(warehouse_id: int, name: str, description: str) -> None:
             )
             if cur.rowcount == 0:
                 raise AppError("Nie znaleziono magazynu.")
-    except sqlite3.IntegrityError as exc:
-        raise AppError("Magazyn o takiej nazwie już istnieje.") from exc
+    except Exception as exc:
+        if "unique" in str(exc).lower() or "duplicate" in str(exc).lower() or "integrity" in str(exc).lower():
+            raise AppError("Magazyn o takiej nazwie już istnieje.") from exc
+        raise
 
 
 # --- Касса и остатки ---
@@ -408,7 +579,8 @@ def update_warehouse(warehouse_id: int, name: str, description: str) -> None:
 def get_cash_balance() -> float:
     with get_conn() as conn:
         row = conn.execute("SELECT balance FROM cashbox WHERE id = 1").fetchone()
-        return _round_money(row["balance"] if row else 0)
+        val = row["balance"] if isinstance(row, dict) or hasattr(row, "keys") else (row[0] if row else 0)
+        return _round_money(val or 0)
 
 
 def get_stock_report() -> list[dict[str, Any]]:
@@ -530,10 +702,12 @@ def create_purchase(
             """
             INSERT INTO purchases (number, doc_date, counterparty_id, warehouse_id, total)
             VALUES (?, ?, ?, ?, ?)
+            RETURNING id
             """,
             (number, doc_date, counterparty_id, warehouse_id, total),
         )
-        purchase_id = int(cur.lastrowid)
+        row = cur.fetchone()
+        purchase_id = int(row["id"] if isinstance(row, dict) or hasattr(row, "keys") else row[0])
         for product_id, qty, price, amount in normalized:
             conn.execute(
                 """
@@ -645,7 +819,7 @@ def create_sale(
         if qty <= 0:
             raise AppError("Ilość w wierszu musi być większa od zera.")
         if price < 0:
-            raise AppError("Cena nie может быть ujemna.")
+            raise AppError("Cena nie może być ujemna.")
         amount = _round_money(qty * price)
         total += amount
         normalized.append((product_id, qty, price, amount))
@@ -674,10 +848,12 @@ def create_sale(
             """
             INSERT INTO sales (number, doc_date, counterparty_id, warehouse_id, total)
             VALUES (?, ?, ?, ?, ?)
+            RETURNING id
             """,
             (number, doc_date, counterparty_id, warehouse_id, total),
         )
-        sale_id = int(cur.lastrowid)
+        row = cur.fetchone()
+        sale_id = int(row["id"] if isinstance(row, dict) or hasattr(row, "keys") else row[0])
         for product_id, qty, price, amount in normalized:
             conn.execute(
                 """
@@ -708,15 +884,12 @@ def delete_sale(sale_id: int) -> None:
 
 def get_dashboard_totals() -> dict[str, float]:
     with get_conn() as conn:
-        purchases = conn.execute(
-            "SELECT COALESCE(SUM(total), 0) AS s FROM purchases"
-        ).fetchone()["s"]
-        sales = conn.execute(
-            "SELECT COALESCE(SUM(total), 0) AS s FROM sales"
-        ).fetchone()["s"]
-        cash = conn.execute("SELECT balance FROM cashbox WHERE id = 1").fetchone()[
-            "balance"
-        ]
+        p_row = conn.execute("SELECT COALESCE(SUM(total), 0) AS s FROM purchases").fetchone()
+        purchases = p_row["s"] if isinstance(p_row, dict) or hasattr(p_row, "keys") else p_row[0]
+        s_row = conn.execute("SELECT COALESCE(SUM(total), 0) AS s FROM sales").fetchone()
+        sales = s_row["s"] if isinstance(s_row, dict) or hasattr(s_row, "keys") else s_row[0]
+        c_row = conn.execute("SELECT balance FROM cashbox WHERE id = 1").fetchone()
+        cash = c_row["balance"] if isinstance(c_row, dict) or hasattr(c_row, "keys") else (c_row[0] if c_row else 0)
     return {
         "purchases": _round_money(purchases),
         "sales": _round_money(sales),
@@ -730,11 +903,12 @@ def peek_next_pallet_code() -> str:
         return _next_pallet_code(conn)
 
 
-def _next_pallet_code(conn: sqlite3.Connection) -> str:
+def _next_pallet_code(conn: DBConnection) -> str:
     row = conn.execute(
         "SELECT MAX(CAST(code AS INTEGER)) AS m FROM pallet_labels"
     ).fetchone()
-    n = int(row["m"] or 0) + 1
+    val = row["m"] if isinstance(row, dict) or hasattr(row, "keys") else (row[0] if row else 0)
+    n = int(val or 0) + 1
     if n > 999999:
         raise AppError("Wykorzystano pulę kodów palet (000001–999999).")
     return f"{n:06d}"
@@ -761,11 +935,14 @@ def create_pallet_label(product_id: int, net_weight: float, tare_weight: float) 
             """
             INSERT INTO pallet_labels (code, product_id, net_weight, tare_weight, created_at)
             VALUES (?, ?, ?, ?, ?)
+            RETURNING id
             """,
             (code, product_id, net_weight, tare_weight, created_at),
         )
+        row = cur.fetchone()
+        label_id = int(row["id"] if isinstance(row, dict) or hasattr(row, "keys") else row[0])
         return {
-            "id": int(cur.lastrowid),
+            "id": label_id,
             "code": code,
             "product_id": product_id,
             "sku": product["sku"],
