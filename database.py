@@ -12,8 +12,15 @@ from typing import Any, Iterator
 try:
     import streamlit as st
     STREAMLIT_AVAILABLE = True
+    # Безопасная функция кэширования для Streamlit
+    cache_data = st.cache_data
 except ImportError:
     STREAMLIT_AVAILABLE = False
+    # Заглушка, если файл запускается вне Streamlit
+    def cache_data(ttl=None):
+        def decorator(func):
+            return func
+        return decorator
 
 try:
     import psycopg2
@@ -356,6 +363,7 @@ def _change_cash(conn: DBConnection, delta: float) -> None:
 # --- Товары ---
 
 
+@cache_data(ttl=5)
 def list_products() -> list[dict[str, Any]]:
     with get_conn() as conn:
         return _rows(
@@ -369,6 +377,7 @@ def list_products() -> list[dict[str, Any]]:
         )
 
 
+@cache_data(ttl=5)
 def get_product(product_id: int) -> dict[str, Any] | None:
     with get_conn() as conn:
         return _row_to_dict(
@@ -453,6 +462,7 @@ def delete_product(product_id: int) -> None:
 # --- Контрагенты ---
 
 
+@cache_data(ttl=5)
 def list_counterparties() -> list[dict[str, Any]]:
     with get_conn() as conn:
         return _rows(
@@ -524,6 +534,7 @@ def delete_counterparty(counterparty_id: int) -> None:
 # --- Склады ---
 
 
+@cache_data(ttl=5)
 def list_warehouses() -> list[dict[str, Any]]:
     with get_conn() as conn:
         return _rows(
@@ -576,6 +587,7 @@ def update_warehouse(warehouse_id: int, name: str, description: str) -> None:
 # --- Касса и остатки ---
 
 
+@cache_data(ttl=5)
 def get_cash_balance() -> float:
     with get_conn() as conn:
         row = conn.execute("SELECT balance FROM cashbox WHERE id = 1").fetchone()
@@ -583,6 +595,7 @@ def get_cash_balance() -> float:
         return _round_money(val or 0)
 
 
+@cache_data(ttl=5)
 def get_stock_report() -> list[dict[str, Any]]:
     with get_conn() as conn:
         return _rows(
@@ -603,6 +616,7 @@ def get_stock_report() -> list[dict[str, Any]]:
         )
 
 
+@cache_data(ttl=5)
 def get_stock_qty(warehouse_id: int, product_id: int) -> float:
     with get_conn() as conn:
         return _stock_qty(conn, warehouse_id, product_id)
@@ -611,6 +625,7 @@ def get_stock_qty(warehouse_id: int, product_id: int) -> float:
 # --- Закупки ---
 
 
+@cache_data(ttl=5)
 def list_purchases() -> list[dict[str, Any]]:
     with get_conn() as conn:
         return _rows(
@@ -629,6 +644,7 @@ def list_purchases() -> list[dict[str, Any]]:
         )
 
 
+@cache_data(ttl=5)
 def get_purchase(purchase_id: int) -> dict[str, Any] | None:
     with get_conn() as conn:
         header = _row_to_dict(
@@ -739,6 +755,7 @@ def delete_purchase(purchase_id: int) -> None:
 # --- Продажи ---
 
 
+@cache_data(ttl=5)
 def list_sales() -> list[dict[str, Any]]:
     with get_conn() as conn:
         return _rows(
@@ -757,6 +774,7 @@ def list_sales() -> list[dict[str, Any]]:
         )
 
 
+@cache_data(ttl=5)
 def get_sale(sale_id: int) -> dict[str, Any] | None:
     with get_conn() as conn:
         header = _row_to_dict(
@@ -882,6 +900,7 @@ def delete_sale(sale_id: int) -> None:
         conn.execute("DELETE FROM sales WHERE id = ?", (sale_id,))
 
 
+@cache_data(ttl=5)
 def get_dashboard_totals() -> dict[str, float]:
     with get_conn() as conn:
         p_row = conn.execute("SELECT COALESCE(SUM(total), 0) AS s FROM purchases").fetchone()
@@ -954,6 +973,7 @@ def create_pallet_label(product_id: int, net_weight: float, tare_weight: float) 
         }
 
 
+@cache_data(ttl=5)
 def list_pallet_labels(limit: int = 50) -> list[dict[str, Any]]:
     with get_conn() as conn:
         rows = _rows(
@@ -975,6 +995,7 @@ def list_pallet_labels(limit: int = 50) -> list[dict[str, Any]]:
     return rows
 
 
+@cache_data(ttl=5)
 def get_pallet_label(label_id: int) -> dict[str, Any] | None:
     with get_conn() as conn:
         row = _row_to_dict(
