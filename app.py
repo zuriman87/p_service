@@ -178,45 +178,50 @@ def _barcode_png(code: str) -> Image.Image:
 
 
 def render_label_png(data: dict) -> bytes:
+    """Render a high-contrast 100 x 150 mm pallet label at 300 DPI.
+
+    The label is deliberately laid out for reading from a short distance:
+    pallet number, goods name and weights use the largest type on the page.
+    """
     dpi = 300
     width = int(100 / 25.4 * dpi)
     height = int(150 / 25.4 * dpi)
     img = Image.new("RGB", (width, height), "#ffffff")
     draw = ImageDraw.Draw(img)
 
-    margin = 36
+    margin = 32
     x0, y0 = margin, margin
     x1, y1 = width - margin, height - margin
 
-    # Zewnętrzna czarna ramka (pocztowy styl logistyczny)
+    # A black-and-white layout remains readable on common thermal printers.
     draw.rectangle((x0, y0, x1, y1), outline="#000000", width=5)
 
-    # --- SEKCJA 1: NAGŁÓWEK ---
-    y_h = 160
-    draw.line((x0, y_h, x1, y_h), fill="#000000", width=4)
-    draw.text((x0 + 24, y0 + 20), "ETYKIETA LOGISTYCZNA", font=_font(34, True), fill="#000000")
-    draw.text((x0 + 24, y0 + 66), "EWIDENCJA ZŁOMU ELEKTRYCZNEGO", font=_font(22, False), fill="#000000")
+    # Header
+    y_header = 195
+    draw.line((x0, y_header, x1, y_header), fill="#000000", width=4)
+    draw.text((x0 + 22, y0 + 18), "ETYKIETA PALETY", font=_font(46, True), fill="#000000")
+    draw.text((x0 + 22, y0 + 78), "ZŁOM ELEKTRYCZNY", font=_font(29, True), fill="#000000")
+    draw.text((x0 + 22, y0 + 120), "FORMAT 100 × 150 mm", font=_font(21), fill="#000000")
 
-    draw.line((x1 - 320, y0, x1 - 320, y_h), fill="#000000", width=3)
-    draw.text((x1 - 300, y0 + 24), "DATA WYDANIA:", font=_font(18, True), fill="#000000")
+    date_x = x1 - 340
+    draw.line((date_x, y0, date_x, y_header), fill="#000000", width=3)
+    draw.text((date_x + 20, y0 + 28), "DATA:", font=_font(23, True), fill="#000000")
     created_at = str(data.get("created_at") or datetime.now().strftime("%Y-%m-%d %H:%M"))
-    draw.text((x1 - 300, y0 + 58), created_at[:16], font=_font(26, True), fill="#000000")
+    draw.text((date_x + 20, y0 + 75), created_at[:16], font=_font(31, True), fill="#000000")
 
-    # --- SEKCJA 2: NUMER PALETY ---
-    y_id = 370
-    draw.line((x0, y_id, x1, y_id), fill="#000000", width=4)
-    draw.text((x0 + 24, y_h + 16), "NUMER IDENTYFIKACYJNY PALETY:", font=_font(22, True), fill="#000000")
-    draw.text((x0 + 24, y_h + 50), str(data["code"]), font=_font(105, True), fill="#000000")
+    # Pallet identifier - intentionally oversized for rapid manual reading.
+    y_code = 435
+    draw.line((x0, y_code, x1, y_code), fill="#000000", width=4)
+    draw.text((x0 + 22, y_header + 18), "NUMER PALETY", font=_font(28, True), fill="#000000")
+    code = str(data["code"])
+    code_bbox = draw.textbbox((0, 0), code, font=_font(132, True))
+    code_width = code_bbox[2] - code_bbox[0]
+    draw.text(((width - code_width) // 2, y_header + 55), code, font=_font(132, True), fill="#000000")
 
-    draw.line((x1 - 280, y_h, x1 - 280, y_id), fill="#000000", width=3)
-    draw.text((x1 - 260, y_h + 24), "RODZAJ:", font=_font(18, True), fill="#000000")
-    draw.text((x1 - 260, y_h + 54), "PALETA", font=_font(36, True), fill="#000000")
-    draw.text((x1 - 260, y_h + 115), "100 × 150 mm", font=_font(22, False), fill="#000000")
-
-    # --- SEKCJA 3: TOWAR I INDEKS ---
-    y_prod = 700
-    draw.line((x0, y_prod, x1, y_prod), fill="#000000", width=4)
-    draw.text((x0 + 24, y_id + 18), "TOWAR / ASORTYMENT:", font=_font(22, True), fill="#000000")
+    # Goods name and SKU
+    y_product = 835
+    draw.line((x0, y_product, x1, y_product), fill="#000000", width=4)
+    draw.text((x0 + 22, y_code + 20), "TOWAR / ASORTYMENT", font=_font(28, True), fill="#000000")
 
     p_name = str(data.get("product") or "")
     words = p_name.split()
@@ -224,8 +229,8 @@ def render_label_png(data: dict) -> bytes:
     cur_line = []
     for w in words:
         cur_line.append(w)
-        bbox = draw.textbbox((0, 0), " ".join(cur_line), font=_font(42, True))
-        if bbox[2] - bbox[0] > (x1 - x0 - 50):
+        bbox = draw.textbbox((0, 0), " ".join(cur_line), font=_font(68, True))
+        if bbox[2] - bbox[0] > (x1 - x0 - 44):
             cur_line.pop()
             lines_text.append(" ".join(cur_line))
             cur_line = [w]
@@ -233,54 +238,52 @@ def render_label_png(data: dict) -> bytes:
         lines_text.append(" ".join(cur_line))
 
     for i, lt in enumerate(lines_text[:2]):
-        draw.text((x0 + 24, y_id + 58 + i * 52), lt, font=_font(42, True), fill="#000000")
+        draw.text((x0 + 22, y_code + 72 + i * 78), lt, font=_font(68, True), fill="#000000")
 
-    draw.line((x0, y_id + 195, x1, y_id + 195), fill="#000000", width=2)
-    draw.text((x0 + 24, y_id + 225), "INDEKS (SKU):", font=_font(22, True), fill="#000000")
-    draw.text((x0 + 220, y_id + 215), str(data.get("sku") or ""), font=_font(38, True), fill="#000000")
+    draw.text((x0 + 22, y_product - 64), "INDEKS: " + str(data.get("sku") or "—"), font=_font(34, True), fill="#000000")
 
-    # --- SEKCJA 4: TABELA WAG (NETTO / TARA / BRUTTO) ---
-    y_w = 980
-    draw.line((x0, y_w, x1, y_w), fill="#000000", width=4)
+    # Weights: large values, with labels above them.
+    y_weights = 1195
+    draw.line((x0, y_weights, x1, y_weights), fill="#000000", width=4)
 
     col_w = (x1 - x0) // 3
     c1_x = x0 + col_w
     c2_x = x0 + 2 * col_w
-    draw.line((c1_x, y_prod, c1_x, y_w), fill="#000000", width=3)
-    draw.line((c2_x, y_prod, c2_x, y_w), fill="#000000", width=3)
-    draw.line((x0, y_prod + 65, x1, y_prod + 65), fill="#000000", width=2)
+    draw.line((c1_x, y_product, c1_x, y_weights), fill="#000000", width=3)
+    draw.line((c2_x, y_product, c2_x, y_weights), fill="#000000", width=3)
+    draw.line((x0, y_product + 72, x1, y_product + 72), fill="#000000", width=2)
 
     def draw_col_centered(col_left: int, col_right: int, header: str, val_str: str) -> None:
-        h_bbox = draw.textbbox((0, 0), header, font=_font(22, True))
+        h_bbox = draw.textbbox((0, 0), header, font=_font(28, True))
         hw = h_bbox[2] - h_bbox[0]
-        draw.text((col_left + (col_right - col_left - hw) // 2, y_prod + 20), header, font=_font(22, True), fill="#000000")
-        v_bbox = draw.textbbox((0, 0), val_str, font=_font(46, True))
+        draw.text((col_left + (col_right - col_left - hw) // 2, y_product + 22), header, font=_font(28, True), fill="#000000")
+        v_bbox = draw.textbbox((0, 0), val_str, font=_font(62, True))
         vw = v_bbox[2] - v_bbox[0]
-        draw.text((col_left + (col_right - col_left - vw) // 2, y_prod + 130), val_str, font=_font(46, True), fill="#000000")
+        draw.text((col_left + (col_right - col_left - vw) // 2, y_product + 105), val_str, font=_font(62, True), fill="#000000")
 
     draw_col_centered(x0, c1_x, "MASA NETTO", kg(data["net_weight"]))
     draw_col_centered(c1_x, c2_x, "TARA", kg(data["tare_weight"]))
     draw_col_centered(c2_x, x1, "MASA BRUTTO", kg(data["gross_weight"]))
 
-    # --- SEKCJA 5: KOD KRESKOWY ---
-    y_bar = 1630
-    draw.line((x0, y_bar, x1, y_bar), fill="#000000", width=4)
-    draw.text((x0 + 24, y_w + 18), "KOD KRESKOWY (CODE 128):", font=_font(22, True), fill="#000000")
+    # Barcode
+    y_barcode = 1690
+    draw.line((x0, y_barcode, x1, y_barcode), fill="#000000", width=4)
+    draw.text((x0 + 22, y_weights + 18), "KOD KRESKOWY / CODE 128", font=_font(28, True), fill="#000000")
 
-    bc_img = _barcode_png(str(data["code"]))
-    bc_w = x1 - x0 - 80
-    bc_h = 420
+    bc_img = _barcode_png(code)
+    bc_w = x1 - x0 - 90
+    bc_h = 325
     bc_img = bc_img.resize((bc_w, bc_h), Image.Resampling.NEAREST)
-    img.paste(bc_img, (x0 + 40, y_w + 60))
+    img.paste(bc_img, (x0 + 45, y_weights + 63))
 
-    code_str = f"* {data['code']} *"
-    c_bbox = draw.textbbox((0, 0), code_str, font=_font(60, True))
+    code_str = f"* {code} *"
+    c_bbox = draw.textbbox((0, 0), code_str, font=_font(74, True))
     cw = c_bbox[2] - c_bbox[0]
-    draw.text(((width - cw) // 2, y_w + 505), code_str, font=_font(60, True), fill="#000000")
+    draw.text(((width - cw) // 2, y_weights + 410), code_str, font=_font(74, True), fill="#000000")
 
-    # --- SEKCJA 6: STOPKA ---
-    draw.text((x0 + 24, y_bar + 30), "SYSTEM EWIDENCJI ZŁOMU  ·  STANDARD LOGISTYCZNY", font=_font(20, False), fill="#000000")
-    draw.text((x1 - 240, y_bar + 30), "CODE 128 / 100x150", font=_font(20, True), fill="#000000")
+    # Footer (kept below the barcode and within the print-safe area)
+    draw.text((x0 + 22, y_barcode + 12), "SYSTEM EWIDENCJI ZŁOMU", font=_font(18, True), fill="#000000")
+    draw.text((x1 - 230, y_barcode + 12), "CODE 128", font=_font(18, True), fill="#000000")
 
     out = BytesIO()
     img.save(out, format="PNG", dpi=(dpi, dpi))
