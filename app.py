@@ -1,3 +1,4 @@
+
 """
 Ewidencja zakupu i sprzedaży złomu elektrycznego.
 
@@ -157,7 +158,7 @@ def _font(size: int, bold: bool = False) -> ImageFont.FreeTypeFont | ImageFont.I
     for path in candidates:
         if Path(path).exists():
             return ImageFont.truetype(path, size)
-    return ImageFont.load_default()
+    return ImageFont.load_default(size=size)
 
 
 def _barcode_png(code: str) -> Image.Image:
