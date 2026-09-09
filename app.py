@@ -1009,49 +1009,48 @@ def page_labels() -> None:
         rows = db.list_pallet_labels()
         if not rows:
             st.info("Nie wydano jeszcze żadnej etykiety.")
-            return
-        view = pd.DataFrame(rows)[
-            ["code", "created_at", "sku", "product", "net_weight", "tare_weight", "gross_weight", "registered_in_inventory"]
-        ].rename(
-            columns={
-                "code": "Kod",
-                "created_at": "Data",
-                "sku": "Indeks",
-                "product": "Towar",
-                "net_weight": "Netto (kg)",
-                "tare_weight": "Tara (kg)",
-                "gross_weight": "Brutto (kg)",
-                "registered_in_inventory": "W ewidencji palet",
-            }
-        )
-        view["W ewidencji palet"] = view["W ewidencji palet"].map(
-            lambda value: "Tak" if bool(value) else "Nie"
-        )
-        event = st.dataframe(
-            view,
-            hide_index=True,
-            width="stretch",
-            on_select="rerun",
-            selection_mode="single-row",
-            key="labels_journal",
-        )
-        picked = selected_id_from_df(event, rows)
-        if not picked:
-            st.caption("Zaznacz etykietę, aby wydrukować ponownie (ten sam kod).")
-            return
-        doc = db.get_pallet_label(picked)
-        if not doc:
-            return
-        png = render_label_png(doc)
-        pdf = render_label_pdf(png)
-        st.download_button(
-            f"Pobierz PDF ({doc['code']})",
-            data=pdf,
-            file_name=f"etykieta_{doc['code']}.pdf",
-            mime="application/pdf",
-            key=f"pdf_{doc['id']}",
-        )
-        _print_label_frame(png, doc["code"])
+        else:
+            view = pd.DataFrame(rows)[
+                ["code", "created_at", "sku", "product", "net_weight", "tare_weight", "gross_weight", "registered_in_inventory"]
+            ].rename(
+                columns={
+                    "code": "Kod",
+                    "created_at": "Data",
+                    "sku": "Indeks",
+                    "product": "Towar",
+                    "net_weight": "Netto (kg)",
+                    "tare_weight": "Tara (kg)",
+                    "gross_weight": "Brutto (kg)",
+                    "registered_in_inventory": "W ewidencji palet",
+                }
+            )
+            view["W ewidencji palet"] = view["W ewidencji palet"].map(
+                lambda value: "Tak" if bool(value) else "Nie"
+            )
+            event = st.dataframe(
+                view,
+                hide_index=True,
+                width="stretch",
+                on_select="rerun",
+                selection_mode="single-row",
+                key="labels_journal",
+            )
+            picked = selected_id_from_df(event, rows)
+            if not picked:
+                st.caption("Zaznacz etykietę, aby wydrukować ponownie (ten sam kod).")
+            else:
+                doc = db.get_pallet_label(picked)
+                if doc:
+                    png = render_label_png(doc)
+                    pdf = render_label_pdf(png)
+                    st.download_button(
+                        f"Pobierz PDF ({doc['code']})",
+                        data=pdf,
+                        file_name=f"etykieta_{doc['code']}.pdf",
+                        mime="application/pdf",
+                        key=f"pdf_{doc['id']}",
+                    )
+                    _print_label_frame(png, doc["code"])
 
     with tab_inventory:
         inventory = db.list_inventory_pallets()
@@ -1060,33 +1059,32 @@ def page_labels() -> None:
                 "Magazyn palet jest pusty. Przy drukowaniu zaznacz opcję "
                 "„Wprowadź do ewidencji palet”."
             )
-            return
+        else:
+            total_net = sum(float(row["net_weight"]) for row in inventory)
+            total_gross = sum(float(row["gross_weight"]) for row in inventory)
+            m1, m2, m3 = st.columns(3)
+            m1.metric("Palety w ewidencji", len(inventory))
+            m2.metric("Łączna masa netto", kg(total_net))
+            m3.metric("Łączna masa brutto", kg(total_gross))
 
-        total_net = sum(float(row["net_weight"]) for row in inventory)
-        total_gross = sum(float(row["gross_weight"]) for row in inventory)
-        m1, m2, m3 = st.columns(3)
-        m1.metric("Palety w ewidencji", len(inventory))
-        m2.metric("Łączna masa netto", kg(total_net))
-        m3.metric("Łączna masa brutto", kg(total_gross))
-
-        st.markdown("**Indywidualne palety w magazynie palet**")
-        inventory_view = pd.DataFrame(inventory)[
-            [
-                "code", "inventory_registered_at", "sku", "product",
-                "net_weight", "tare_weight", "gross_weight",
-            ]
-        ].rename(
-            columns={
-                "code": "Kod palety",
-                "inventory_registered_at": "Data wprowadzenia",
-                "sku": "Indeks",
-                "product": "Towar",
-                "net_weight": "Netto (kg)",
-                "tare_weight": "Tara (kg)",
-                "gross_weight": "Brutto (kg)",
-            }
-        )
-        st.dataframe(inventory_view, hide_index=True, width="stretch")
+            st.markdown("**Indywidualne palety w magazynie palet**")
+            inventory_view = pd.DataFrame(inventory)[
+                [
+                    "code", "inventory_registered_at", "sku", "product",
+                    "net_weight", "tare_weight", "gross_weight",
+                ]
+            ].rename(
+                columns={
+                    "code": "Kod palety",
+                    "inventory_registered_at": "Data wprowadzenia",
+                    "sku": "Indeks",
+                    "product": "Towar",
+                    "net_weight": "Netto (kg)",
+                    "tare_weight": "Tara (kg)",
+                    "gross_weight": "Brutto (kg)",
+                }
+            )
+            st.dataframe(inventory_view, hide_index=True, width="stretch")
 
 
 def page_reports() -> None:
