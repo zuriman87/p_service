@@ -184,8 +184,9 @@ def init_db() -> None:
                     registered_in_inventory BOOLEAN NOT NULL DEFAULT FALSE,
                     inventory_registered_at TEXT
                 );
+                CREATE SEQUENCE IF NOT EXISTS app_users_id_seq;
                 CREATE TABLE IF NOT EXISTS app_users (
-                    id SERIAL PRIMARY KEY,
+                    id INTEGER PRIMARY KEY DEFAULT nextval('app_users_id_seq'),
                     username TEXT NOT NULL UNIQUE,
                     password_hash TEXT NOT NULL,
                     is_admin BOOLEAN NOT NULL DEFAULT FALSE,
