@@ -118,7 +118,8 @@ def qty(value: float) -> str:
 
 
 def kg(value: float) -> str:
-    return f"{float(value):.3f}".replace(".", ",") + " kg"
+    text = f"{float(value):.3f}".rstrip("0").rstrip(".")
+    return text.replace(".", ",") + " kg"
 
 
 def show_error(exc: Exception) -> None:
@@ -609,7 +610,7 @@ def render_lines_editor(
             st.session_state[last_key] = pid
     with c2:
         quantity = st.number_input(
-            "Ilość", min_value=0.001, step=1.0, format="%.3f", key=f"{state_key}_qty"
+            "Ilość", min_value=0.001, value=1.0, step=1.0, key=f"{state_key}_qty"
         )
     with c3:
         price = st.number_input(
@@ -660,8 +661,7 @@ def render_lines_editor(
             "Ilość",
             min_value=0.001,
             value=float(line["quantity"]),
-            step=0.1,
-            format="%.3f",
+            step=1.0,
             key=f"{state_key}_edit_qty_{line['uid']}",
             label_visibility="collapsed",
         )
@@ -986,15 +986,15 @@ def page_labels() -> None:
             net = st.number_input(
                 "Masa netto (kg) *",
                 min_value=0.001,
+                value=1.0,
                 step=1.0,
-                format="%.3f",
                 key="label_net",
             )
             tare = st.number_input(
                 "Masa tary (kg) *",
                 min_value=0.0,
-                step=0.5,
-                format="%.3f",
+                value=0.0,
+                step=1.0,
                 key="label_tare",
             )
             gross = round(float(net) + float(tare), 3)
