@@ -835,19 +835,67 @@ def _print_label_frame(png_bytes: bytes, code: str) -> None:
     <html>
     <head>
       <style>
-        @page {{ size: 100mm 150mm; margin: 0; }}
-        html, body {{ margin: 0; padding: 0; background: #f8fafc; font-family: sans-serif; }}
-        .wrap {{ padding: 12px; }}
+        @page {{
+          size: 100mm 150mm;
+          margin: 0;
+        }}
+        html, body {{
+          margin: 0;
+          padding: 0;
+          width: 100mm;
+          height: 150mm;
+          background: #f8fafc;
+          font-family: sans-serif;
+          overflow: hidden;
+        }}
+        .wrap {{
+          padding: 12px;
+          box-sizing: border-box;
+          text-align: center;
+        }}
         button {{
-          background: #000000; color: #ffffff; border: 0; border-radius: 6px;
-          padding: 10px 18px; font-weight: 700; cursor: pointer; margin-bottom: 12px; font-size: 15px;
+          background: #000000;
+          color: #ffffff;
+          border: 0;
+          border-radius: 6px;
+          padding: 10px 18px;
+          font-weight: 700;
+          cursor: pointer;
+          margin-bottom: 12px;
+          font-size: 15px;
         }}
         button:hover {{ background: #333333; }}
-        img {{ width: 100mm; height: 150mm; background: #fff; box-shadow: 0 4px 16px rgba(0,0,0,.12); border: 1px solid #1e293b; }}
+        img {{
+          width: 100%;
+          max-width: 100mm;
+          height: auto;
+          background: #fff;
+          box-shadow: 0 4px 16px rgba(0,0,0,.12);
+          border: 1px solid #1e293b;
+          box-sizing: border-box;
+        }}
         @media print {{
-          .wrap {{ padding: 0; background: #fff; }}
-          button {{ display: none; }}
-          img {{ box-shadow: none; border: none; }}
+          html, body {{
+            background: #fff;
+            width: 100mm;
+            height: 150mm;
+          }}
+          .wrap {{
+            padding: 0 !important;
+            margin: 0 !important;
+            background: #fff;
+          }}
+          button {{
+            display: none !important;
+          }}
+          img {{
+            width: 100mm !important;
+            height: 150mm !important;
+            box-shadow: none !important;
+            border: none !important;
+            margin: 0 !important;
+            padding: 0 !important;
+          }}
         }}
       </style>
     </head>
@@ -859,7 +907,7 @@ def _print_label_frame(png_bytes: bytes, code: str) -> None:
     </body>
     </html>
     """
-    components.html(html, height=720, scrolling=True)
+    components.html(html, height=720, scrolling=False)
 
 
 def page_labels() -> None:
