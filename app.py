@@ -1,3 +1,4 @@
+
 """
 Ewidencja zakupu i sprzedaży złomu elektrycznego.
 
