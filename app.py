@@ -60,6 +60,7 @@ st.markdown(
       [data-testid="stSidebar"] * { color: #f6f6f6 !important; }
       [data-testid="stSidebar"] .stRadio label { font-weight: 600; padding: 3px 0; }
       [data-testid="stSidebar"] [data-checked="true"] + div { color: #f7cf1a !important; }
+      [data-testid="stSidebar"] input[type="radio"] { accent-color: #f2c300 !important; }
       .block-container { padding-top: 1rem; padding-bottom: 2rem; max-width: 1360px; }
       h1, h2, h3 { color: #303030; letter-spacing: -0.01em; }
       div[data-testid="stMetric"] {
@@ -111,6 +112,16 @@ st.markdown(
         border: 1px solid #d3a900;
         color: #292929;
       }
+      button[data-testid="stBaseButton-primary"] {
+        background: #f2c300 !important;
+        border-color: #d3a900 !important;
+        color: #292929 !important;
+      }
+      button[data-testid="stBaseButton-primary"]:hover {
+        background: #dfb300 !important;
+        border-color: #bd9500 !important;
+        color: #292929 !important;
+      }
       .stButton > button[kind="secondary"] {
         background: #fff;
         border: 1px solid #bdbdbb;
@@ -139,6 +150,10 @@ st.markdown(
       [data-testid="stTabs"] button[aria-selected="true"] {
         background: #f2c300 !important;
         color: #292929 !important;
+      }
+      [data-testid="stTabs"] button[data-baseweb="tab"][aria-selected="true"] {
+        color: #292929 !important;
+        border-bottom-color: #f2c300 !important;
       }
       [data-testid="stDataFrame"] {
         border: 1px solid #c9c9c7;
