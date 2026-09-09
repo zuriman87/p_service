@@ -142,6 +142,13 @@ def product_label(p: dict) -> str:
 
 
 def _font(size: int, bold: bool = False) -> ImageFont.FreeTypeFont | ImageFont.ImageFont:
+    """Return a scalable font both locally and on Streamlit Cloud.
+
+    Streamlit Cloud uses a slim Linux image.  When its system font is absent,
+    Pillow's old ``load_default()`` fallback is only a tiny bitmap font and
+    ignores our requested label size.  Pillow 10.1+ can scale its embedded
+    fallback font, so the label remains readable even without a system font.
+    """
     candidates = []
     if bold:
         candidates += [
@@ -157,7 +164,11 @@ def _font(size: int, bold: bool = False) -> ImageFont.FreeTypeFont | ImageFont.I
     for path in candidates:
         if Path(path).exists():
             return ImageFont.truetype(path, size)
-    return ImageFont.load_default()
+    try:
+        return ImageFont.load_default(size=size)
+    except TypeError:
+        # Kept only for a developer machine with an older Pillow release.
+        return ImageFont.load_default()
 
 
 def _barcode_png(code: str) -> Image.Image:
