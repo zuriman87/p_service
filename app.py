@@ -925,7 +925,9 @@ def page_labels() -> None:
         st.warning("Najpierw dodaj towar w nomenklaturze.")
         return
 
-    tab_new, tab_journal = st.tabs(["Nowa etykieta", "Wydane etykiety"])
+    tab_new, tab_journal, tab_inventory = st.tabs(
+        ["Nowa etykieta", "Wydane etykiety", "Magazyn palet"]
+    )
     labels_map = option_map(products, product_label)
     by_id = {p["id"]: p for p in products}
 
@@ -949,6 +951,13 @@ def page_labels() -> None:
                 key="label_tare",
             )
             gross = round(float(net) + float(tare), 3)
+            register_in_inventory = st.checkbox(
+                "Wprowadź do ewidencji palet",
+                help=(
+                    "Paleta trafi do osobnego magazynu palet. "
+                    "Nie zmienia to zwykłych stanów towarów w magazynach."
+                ),
+            )
             st.caption(f"Masa brutto: **{kg(gross)}**  ·  następny kod: **{db.peek_next_pallet_code()}**")
             print_clicked = st.button("Drukuj etykietę 100×150 mm", type="primary")
 
@@ -964,7 +973,9 @@ def page_labels() -> None:
 
         if print_clicked:
             try:
-                saved = db.create_pallet_label(pid, float(net), float(tare))
+                saved = db.create_pallet_label(
+                    pid, float(net), float(tare), register_in_inventory
+                )
                 png = render_label_png(saved)
                 pdf = render_label_pdf(png)
                 st.session_state["last_label"] = {
@@ -972,7 +983,10 @@ def page_labels() -> None:
                     "pdf": pdf,
                     "code": saved["code"],
                 }
-                st.success(f"Nadano kod palety {saved['code']}. Etykieta gotowa do druku.")
+                message = f"Nadano kod palety {saved['code']}. Etykieta gotowa do druku."
+                if register_in_inventory:
+                    message += " Paleta została wprowadzona do ewidencji palet."
+                st.success(message)
             except AppError as exc:
                 show_error(exc)
 
@@ -997,7 +1011,7 @@ def page_labels() -> None:
             st.info("Nie wydano jeszcze żadnej etykiety.")
             return
         view = pd.DataFrame(rows)[
-            ["code", "created_at", "sku", "product", "net_weight", "tare_weight", "gross_weight"]
+            ["code", "created_at", "sku", "product", "net_weight", "tare_weight", "gross_weight", "registered_in_inventory"]
         ].rename(
             columns={
                 "code": "Kod",
@@ -1007,7 +1021,11 @@ def page_labels() -> None:
                 "net_weight": "Netto (kg)",
                 "tare_weight": "Tara (kg)",
                 "gross_weight": "Brutto (kg)",
+                "registered_in_inventory": "W ewidencji palet",
             }
+        )
+        view["W ewidencji palet"] = view["W ewidencji palet"].map(
+            lambda value: "Tak" if bool(value) else "Nie"
         )
         event = st.dataframe(
             view,
@@ -1034,6 +1052,41 @@ def page_labels() -> None:
             key=f"pdf_{doc['id']}",
         )
         _print_label_frame(png, doc["code"])
+
+    with tab_inventory:
+        inventory = db.list_inventory_pallets()
+        if not inventory:
+            st.info(
+                "Magazyn palet jest pusty. Przy drukowaniu zaznacz opcję "
+                "„Wprowadź do ewidencji palet”."
+            )
+            return
+
+        total_net = sum(float(row["net_weight"]) for row in inventory)
+        total_gross = sum(float(row["gross_weight"]) for row in inventory)
+        m1, m2, m3 = st.columns(3)
+        m1.metric("Palety w ewidencji", len(inventory))
+        m2.metric("Łączna masa netto", kg(total_net))
+        m3.metric("Łączna masa brutto", kg(total_gross))
+
+        st.markdown("**Indywidualne palety w magazynie palet**")
+        inventory_view = pd.DataFrame(inventory)[
+            [
+                "code", "inventory_registered_at", "sku", "product",
+                "net_weight", "tare_weight", "gross_weight",
+            ]
+        ].rename(
+            columns={
+                "code": "Kod palety",
+                "inventory_registered_at": "Data wprowadzenia",
+                "sku": "Indeks",
+                "product": "Towar",
+                "net_weight": "Netto (kg)",
+                "tare_weight": "Tara (kg)",
+                "gross_weight": "Brutto (kg)",
+            }
+        )
+        st.dataframe(inventory_view, hide_index=True, width="stretch")
 
 
 def page_reports() -> None:

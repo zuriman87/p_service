@@ -180,7 +180,9 @@ def init_db() -> None:
                     product_id INTEGER NOT NULL REFERENCES products(id),
                     net_weight NUMERIC(12, 3) NOT NULL CHECK (net_weight > 0),
                     tare_weight NUMERIC(12, 3) NOT NULL CHECK (tare_weight >= 0),
-                    created_at TEXT NOT NULL
+                    created_at TEXT NOT NULL,
+                    registered_in_inventory BOOLEAN NOT NULL DEFAULT FALSE,
+                    inventory_registered_at TEXT
                 );
                 """
             )
@@ -266,10 +268,36 @@ def init_db() -> None:
                     net_weight REAL NOT NULL CHECK (net_weight > 0),
                     tare_weight REAL NOT NULL CHECK (tare_weight >= 0),
                     created_at TEXT NOT NULL,
+                    registered_in_inventory INTEGER NOT NULL DEFAULT 0,
+                    inventory_registered_at TEXT,
                     FOREIGN KEY (product_id) REFERENCES products(id)
                 );
                 """
             )
+
+        # Migrate databases created before pallet inventory was introduced.
+        if conn.is_pg:
+            conn.execute(
+                "ALTER TABLE pallet_labels ADD COLUMN IF NOT EXISTS "
+                "registered_in_inventory BOOLEAN NOT NULL DEFAULT FALSE"
+            )
+            conn.execute(
+                "ALTER TABLE pallet_labels ADD COLUMN IF NOT EXISTS "
+                "inventory_registered_at TEXT"
+            )
+        else:
+            columns = {
+                row["name"] for row in conn.execute("PRAGMA table_info(pallet_labels)").fetchall()
+            }
+            if "registered_in_inventory" not in columns:
+                conn.execute(
+                    "ALTER TABLE pallet_labels ADD COLUMN "
+                    "registered_in_inventory INTEGER NOT NULL DEFAULT 0"
+                )
+            if "inventory_registered_at" not in columns:
+                conn.execute(
+                    "ALTER TABLE pallet_labels ADD COLUMN inventory_registered_at TEXT"
+                )
 
 def _row_to_dict(row: Any) -> dict[str, Any] | None:
     if row is None:
@@ -589,7 +617,12 @@ def _next_pallet_code(conn: DBConnection) -> str:
     if n > 999999: raise AppError("Wykorzystano pulę kodów palet (000001–999999).")
     return f"{n:06d}"
 
-def create_pallet_label(product_id: int, net_weight: float, tare_weight: float) -> dict[str, Any]:
+def create_pallet_label(
+    product_id: int,
+    net_weight: float,
+    tare_weight: float,
+    register_in_inventory: bool = False,
+) -> dict[str, Any]:
     if not product_id: raise AppError("Wybierz towar na etykietę.")
     net_weight, tare_weight = _round_qty(net_weight), _round_qty(tare_weight)
     if net_weight <= 0: raise AppError("Masa netto musi być większa od zera.")
@@ -599,7 +632,17 @@ def create_pallet_label(product_id: int, net_weight: float, tare_weight: float) 
         if not product: raise AppError("Nie znaleziono towaru.")
         code = _next_pallet_code(conn)
         created_at = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        cur = conn.execute("INSERT INTO pallet_labels (code, product_id, net_weight, tare_weight, created_at) VALUES (?, ?, ?, ?, ?) RETURNING id", (code, product_id, net_weight, tare_weight, created_at))
+        registered_at = created_at if register_in_inventory else None
+        cur = conn.execute(
+            """
+            INSERT INTO pallet_labels
+                (code, product_id, net_weight, tare_weight, created_at,
+                 registered_in_inventory, inventory_registered_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?) RETURNING id
+            """,
+            (code, product_id, net_weight, tare_weight, created_at,
+             register_in_inventory, registered_at),
+        )
         row = cur.fetchone()
         label_id = int(row["id"] if isinstance(row, dict) or hasattr(row, "keys") else row[0])
     clear_app_cache()
@@ -608,20 +651,30 @@ def create_pallet_label(product_id: int, net_weight: float, tare_weight: float) 
         "sku": product["sku"], "product": product["name"],
         "net_weight": net_weight, "tare_weight": tare_weight,
         "gross_weight": _round_qty(net_weight + tare_weight),
-        "created_at": created_at,
+        "created_at": created_at, "registered_in_inventory": register_in_inventory,
+        "inventory_registered_at": registered_at,
     }
 
 @cache_data(ttl=600)
 def list_pallet_labels(limit: int = 50) -> list[dict[str, Any]]:
     with get_conn() as conn:
-        rows = _rows(conn.execute("SELECT l.id, l.code, l.product_id, l.net_weight, l.tare_weight, l.created_at, p.sku, p.name AS product FROM pallet_labels l JOIN products p ON p.id = l.product_id ORDER BY l.id DESC LIMIT ?", (limit,)).fetchall())
+        rows = _rows(conn.execute("SELECT l.id, l.code, l.product_id, l.net_weight, l.tare_weight, l.created_at, l.registered_in_inventory, l.inventory_registered_at, p.sku, p.name AS product FROM pallet_labels l JOIN products p ON p.id = l.product_id ORDER BY l.id DESC LIMIT ?", (limit,)).fetchall())
     for row in rows: row["gross_weight"] = _round_qty(float(row["net_weight"]) + float(row["tare_weight"]))
     return rows
 
 @cache_data(ttl=600)
 def get_pallet_label(label_id: int) -> dict[str, Any] | None:
     with get_conn() as conn:
-        row = _row_to_dict(conn.execute("SELECT l.id, l.code, l.product_id, l.net_weight, l.tare_weight, l.created_at, p.sku, p.name AS product FROM pallet_labels l JOIN products p ON p.id = l.product_id WHERE l.id = ?", (label_id,)).fetchone())
+        row = _row_to_dict(conn.execute("SELECT l.id, l.code, l.product_id, l.net_weight, l.tare_weight, l.created_at, l.registered_in_inventory, l.inventory_registered_at, p.sku, p.name AS product FROM pallet_labels l JOIN products p ON p.id = l.product_id WHERE l.id = ?", (label_id,)).fetchone())
     if not row: return None
     row["gross_weight"] = _round_qty(float(row["net_weight"]) + float(row["tare_weight"]))
     return row
+
+@cache_data(ttl=600)
+def list_inventory_pallets(limit: int = 500) -> list[dict[str, Any]]:
+    """Individual pallets registered in the separate pallet inventory."""
+    with get_conn() as conn:
+        rows = _rows(conn.execute("SELECT l.id, l.code, l.product_id, l.net_weight, l.tare_weight, l.created_at, l.inventory_registered_at, p.sku, p.name AS product FROM pallet_labels l JOIN products p ON p.id = l.product_id WHERE l.registered_in_inventory = ? ORDER BY l.id DESC LIMIT ?", (True, limit)).fetchall())
+    for row in rows:
+        row["gross_weight"] = _round_qty(float(row["net_weight"]) + float(row["tare_weight"]))
+    return rows
