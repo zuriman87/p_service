@@ -160,7 +160,11 @@ def bootstrap_initial_admin() -> None:
     except Exception:
         return
     if username.strip() and password:
-        db.create_user(username, hash_password(password), is_admin=True)
+        try:
+            db.create_user(username, hash_password(password), is_admin=True)
+        except AppError:
+            # Another Streamlit worker may create the same initial user first.
+            pass
 
 
 db.init_db()
