@@ -12,6 +12,9 @@ Uruchomienie:
 from __future__ import annotations
 
 import base64
+import hashlib
+import hmac
+import secrets
 import uuid
 from datetime import date, datetime
 from io import BytesIO
@@ -36,8 +39,6 @@ st.set_page_config(
     layout="wide",
     initial_sidebar_state="expanded",
 )
-
-db.init_db()
 
 st.markdown(
     """
@@ -122,6 +123,48 @@ def kg(value: float) -> str:
 
 def show_error(exc: Exception) -> None:
     st.error(str(exc))
+
+
+PBKDF2_ITERATIONS = 300_000
+
+
+def hash_password(password: str) -> str:
+    """Create a salted password hash; plain-text passwords are never stored."""
+    salt = secrets.token_hex(16)
+    digest = hashlib.pbkdf2_hmac(
+        "sha256", password.encode("utf-8"), salt.encode("utf-8"), PBKDF2_ITERATIONS
+    ).hex()
+    return f"pbkdf2_sha256${PBKDF2_ITERATIONS}${salt}${digest}"
+
+
+def verify_password(password: str, stored_hash: str) -> bool:
+    try:
+        algorithm, iterations, salt, saved_digest = stored_hash.split("$", 3)
+        if algorithm != "pbkdf2_sha256":
+            return False
+        calculated = hashlib.pbkdf2_hmac(
+            "sha256", password.encode("utf-8"), salt.encode("utf-8"), int(iterations)
+        ).hex()
+        return hmac.compare_digest(calculated, saved_digest)
+    except (AttributeError, ValueError):
+        return False
+
+
+def bootstrap_initial_admin() -> None:
+    """Create the first admin once, using values only from Streamlit Secrets."""
+    if db.user_count() > 0:
+        return
+    try:
+        username = str(st.secrets["INITIAL_ADMIN_LOGIN"])
+        password = str(st.secrets["INITIAL_ADMIN_PASSWORD"])
+    except Exception:
+        return
+    if username.strip() and password:
+        db.create_user(username, hash_password(password), is_admin=True)
+
+
+db.init_db()
+bootstrap_initial_admin()
 
 
 def option_map(rows: list[dict], label_fn) -> dict[str, int]:
@@ -1087,6 +1130,74 @@ def page_labels() -> None:
             st.dataframe(inventory_view, hide_index=True, width="stretch")
 
 
+def page_users() -> None:
+    st.subheader("Użytkownicy")
+    st.caption("Tu administrator dodaje osoby mające dostęp do aplikacji. Hasła są przechowywane wyłącznie jako bezpieczne skróty.")
+
+    users = db.list_users()
+    view = pd.DataFrame(users)[["username", "is_admin", "created_at"]].rename(
+        columns={"username": "Login", "is_admin": "Administrator", "created_at": "Utworzono"}
+    )
+    view["Administrator"] = view["Administrator"].map(lambda value: "Tak" if bool(value) else "Nie")
+    st.dataframe(view, hide_index=True, width="stretch")
+
+    add_col, password_col = st.columns(2, gap="large")
+    with add_col:
+        st.markdown("**Dodaj użytkownika**")
+        with st.form("add_user_form", clear_on_submit=True):
+            username = st.text_input("Login *", placeholder="np. magazynier")
+            password = st.text_input("Hasło *", type="password")
+            is_admin = st.checkbox("Administrator")
+            if st.form_submit_button("Dodaj użytkownika", type="primary"):
+                if len(password) < 8:
+                    st.error("Hasło musi mieć co najmniej 8 znaków.")
+                else:
+                    try:
+                        db.create_user(username, hash_password(password), is_admin)
+                        st.success("Użytkownik został dodany.")
+                        st.rerun()
+                    except AppError as exc:
+                        show_error(exc)
+
+    with password_col:
+        st.markdown("**Zmień hasło**")
+        options = {user["username"]: user for user in users}
+        selected_name = st.selectbox("Użytkownik", list(options))
+        with st.form("change_password_form", clear_on_submit=True):
+            new_password = st.text_input("Nowe hasło *", type="password")
+            if st.form_submit_button("Zapisz nowe hasło"):
+                if len(new_password) < 8:
+                    st.error("Hasło musi mieć co najmniej 8 znaków.")
+                else:
+                    db.update_user_password(options[selected_name]["id"], hash_password(new_password))
+                    st.success("Hasło zostało zmienione.")
+
+
+def login_required() -> bool:
+    if st.session_state.get("current_user"):
+        return True
+
+    st.markdown('<div class="hero"><h1>Ewidencja złomu elektrycznego</h1><p>Zaloguj się, aby otworzyć aplikację.</p></div>', unsafe_allow_html=True)
+    if db.user_count() == 0:
+        st.error("Aplikacja nie ma jeszcze administratora. Dodaj dane pierwszego administratora w Streamlit Secrets.")
+        return False
+
+    _, login_col, _ = st.columns([1, 1.2, 1])
+    with login_col:
+        with st.form("login_form"):
+            username = st.text_input("Login")
+            password = st.text_input("Hasło", type="password")
+            if st.form_submit_button("Zaloguj się", type="primary", width="stretch"):
+                user = db.get_user(username)
+                if user and verify_password(password, user["password_hash"]):
+                    st.session_state["current_user"] = {
+                        "id": user["id"], "username": user["username"], "is_admin": bool(user["is_admin"]),
+                    }
+                    st.rerun()
+                st.error("Nieprawidłowy login lub hasło.")
+    return False
+
+
 def page_reports() -> None:
     st.subheader("Raporty / Pulpit")
     totals = db.get_dashboard_totals()
@@ -1113,6 +1224,10 @@ def page_reports() -> None:
     st.dataframe(view, hide_index=True, width="stretch")
 
 
+if not login_required():
+    st.stop()
+
+
 st.markdown(
     """
     <div class="hero">
@@ -1132,10 +1247,17 @@ MENU = [
     "Sprzedaż",
     "Etykiety palet",
 ]
+if st.session_state["current_user"]["is_admin"]:
+    MENU.append("Użytkownicy")
 
 with st.sidebar:
     st.markdown("**Nawigacja**")
     page = st.radio("Sekcja", MENU, label_visibility="collapsed")
+    st.divider()
+    st.caption(f"Zalogowano: {st.session_state['current_user']['username']}")
+    if st.button("Wyloguj się", width="stretch"):
+        st.session_state.pop("current_user", None)
+        st.rerun()
     st.divider()
     st.metric("Kasa", money(db.get_cash_balance()))
     st.caption(
@@ -1150,5 +1272,6 @@ pages = {
     "Zakupy": page_purchases,
     "Sprzedaż": page_sales,
     "Etykiety palet": page_labels,
+    "Użytkownicy": page_users,
 }
 pages[page]()

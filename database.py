@@ -184,6 +184,13 @@ def init_db() -> None:
                     registered_in_inventory BOOLEAN NOT NULL DEFAULT FALSE,
                     inventory_registered_at TEXT
                 );
+                CREATE TABLE IF NOT EXISTS app_users (
+                    id SERIAL PRIMARY KEY,
+                    username TEXT NOT NULL UNIQUE,
+                    password_hash TEXT NOT NULL,
+                    is_admin BOOLEAN NOT NULL DEFAULT FALSE,
+                    created_at TEXT NOT NULL
+                );
                 """
             )
         else:
@@ -272,6 +279,13 @@ def init_db() -> None:
                     inventory_registered_at TEXT,
                     FOREIGN KEY (product_id) REFERENCES products(id)
                 );
+                CREATE TABLE IF NOT EXISTS app_users (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    username TEXT NOT NULL UNIQUE,
+                    password_hash TEXT NOT NULL,
+                    is_admin INTEGER NOT NULL DEFAULT 0,
+                    created_at TEXT NOT NULL
+                );
                 """
             )
 
@@ -298,6 +312,71 @@ def init_db() -> None:
                 conn.execute(
                     "ALTER TABLE pallet_labels ADD COLUMN inventory_registered_at TEXT"
                 )
+
+
+def user_count() -> int:
+    with get_conn() as conn:
+        row = _row_to_dict(conn.execute("SELECT COUNT(*) AS count FROM app_users").fetchone())
+    return int(row["count"])
+
+
+def create_user(username: str, password_hash: str, is_admin: bool = False) -> dict[str, Any]:
+    username = username.strip().lower()
+    if not username:
+        raise AppError("Nazwa użytkownika jest wymagana.")
+    try:
+        with get_conn() as conn:
+            row = _row_to_dict(conn.execute(
+                "INSERT INTO app_users (username, password_hash, is_admin, created_at) "
+                "VALUES (?, ?, ?, ?) RETURNING id, username, is_admin, created_at",
+                (username, password_hash, is_admin, datetime.now().isoformat(timespec="seconds")),
+            ).fetchone())
+    except Exception as exc:
+        if "unique" in str(exc).lower() or "duplicate" in str(exc).lower():
+            raise AppError("Taki użytkownik już istnieje.") from exc
+        raise
+    clear_app_cache()
+    return row
+
+
+def get_user(username: str) -> dict[str, Any] | None:
+    with get_conn() as conn:
+        return _row_to_dict(conn.execute(
+            "SELECT id, username, password_hash, is_admin, created_at "
+            "FROM app_users WHERE username = ?",
+            (username.strip().lower(),),
+        ).fetchone())
+
+
+@cache_data(ttl=60)
+def list_users() -> list[dict[str, Any]]:
+    with get_conn() as conn:
+        return _rows(conn.execute(
+            "SELECT id, username, is_admin, created_at FROM app_users ORDER BY username"
+        ).fetchall())
+
+
+def update_user_password(user_id: int, password_hash: str) -> None:
+    with get_conn() as conn:
+        conn.execute("UPDATE app_users SET password_hash = ? WHERE id = ?", (password_hash, user_id))
+    clear_app_cache()
+
+
+def delete_user(user_id: int) -> None:
+    with get_conn() as conn:
+        user = _row_to_dict(conn.execute(
+            "SELECT id, is_admin FROM app_users WHERE id = ?", (user_id,)
+        ).fetchone())
+        if not user:
+            raise AppError("Nie znaleziono użytkownika.")
+        if bool(user["is_admin"]):
+            admins = _row_to_dict(conn.execute(
+                "SELECT COUNT(*) AS count FROM app_users WHERE is_admin = ?", (True,)
+            ).fetchone())
+            if int(admins["count"]) <= 1:
+                raise AppError("Nie można usunąć ostatniego administratora.")
+        conn.execute("DELETE FROM app_users WHERE id = ?", (user_id,))
+    clear_app_cache()
 
 def _row_to_dict(row: Any) -> dict[str, Any] | None:
     if row is None:
