@@ -130,11 +130,19 @@ st.markdown(
       [data-baseweb="input"], [data-baseweb="select"] > div {
         background: #fff !important;
         border-radius: 2px !important;
-        border-color: #adadab !important;
+        border: 1px solid #929290 !important;
+        box-shadow: 0 0 0 1px #929290 !important;
+      }
+      [data-testid="stTextInput"] [data-baseweb="input"],
+      [data-testid="stNumberInput"] [data-baseweb="input"],
+      [data-testid="stDateInput"] [data-baseweb="input"],
+      [data-testid="stSelectbox"] [data-baseweb="select"] > div {
+        border: 1px solid #929290 !important;
+        box-shadow: 0 0 0 1px #929290 !important;
       }
       [data-baseweb="input"]:focus-within, [data-baseweb="select"] > div:focus-within {
-        border-color: #d7aa00 !important;
-        box-shadow: 0 0 0 1px #f2c300 !important;
+        border-color: #555553 !important;
+        box-shadow: 0 0 0 2px rgba(242, 195, 0, 0.72) !important;
       }
       [data-testid="stTabs"] [data-baseweb="tab-list"] {
         gap: 0;
