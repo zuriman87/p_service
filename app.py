@@ -895,6 +895,8 @@ def _print_label_frame(png_bytes: bytes, code: str) -> None:
             border: none !important;
             margin: 0 !important;
             padding: 0 !important;
+            position: relative;
+            top: -2mm;
           }}
         }}
       </style>
@@ -908,7 +910,6 @@ def _print_label_frame(png_bytes: bytes, code: str) -> None:
     </html>
     """
     components.html(html, height=720, scrolling=False)
-
 
 def page_labels() -> None:
     st.subheader("Etykiety palet")
